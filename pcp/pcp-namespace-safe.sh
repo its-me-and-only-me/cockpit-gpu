@@ -20,6 +20,9 @@
 #
 # Wird vom Installer idempotent zwischen den Marker-Zeilen in
 # /etc/pcp.env injected; uninstall.sh entfernt den Block wieder.
+# ACHTUNG: /etc/pcp.env ist pures %config (ohne noreplace) — ein PCP-Update
+# ersetzt die Datei (unsere Änderung landet in .rpmsave). Nach Updates
+# daher install.sh erneut laufen lassen; der Block wird dann neu gesetzt.
 
 if declare -F _get_pids_by_name >/dev/null 2>&1
 then
