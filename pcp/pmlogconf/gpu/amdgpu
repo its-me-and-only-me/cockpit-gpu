@@ -1,0 +1,16 @@
+#pmlogconf-setup 2.0
+ident	AMD GPU activity, clocks, memory, temperature (amdgpu PMDA)
+force	include
+	amdgpu.gpu.load
+	amdgpu.gpu.temperature
+	amdgpu.gpu.average_power
+	amdgpu.gpu.clock
+	amdgpu.gpu.clock_max
+	amdgpu.memory.used
+	amdgpu.memory.total
+	amdgpu.memory.free
+	amdgpu.memory.clock
+	amdgpu.memory.clock_max
+	amdgpu.numcards
+	amdgpu.cardname
+	amdgpu.cardid

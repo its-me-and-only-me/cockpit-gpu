@@ -1,0 +1,6 @@
+#pmlogconf-setup 2.0
+ident	AMD GPU extras via MMV exporter (GTT, gfxclk)
+force	include
+	mmv.amdgpu.gtt_used
+	mmv.amdgpu.gtt_total
+	mmv.amdgpu.gfxclk
