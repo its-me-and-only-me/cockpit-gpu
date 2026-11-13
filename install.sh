@@ -140,5 +140,7 @@ systemctl restart pmlogger
 echo
 echo "Fertig. Prüfen mit:"
 echo "  pminfo amdgpu mmv.amdgpu            # Live-Werte"
+# shellcheck disable=SC1111  # deutsche Anführungszeichen im Ausgabetext beabsichtigt
 echo "  Cockpit neu laden → Menüpunkt „GPU“  (läuft alles über den Cockpit-Bridge-Kanal)"
-echo "  Dichte: pmlogsummary -y -S -120seconds \\$(ls -t /var/log/pcp/pmlogger/\\$(hostname) | grep -E '^[0-9]{8}' | head -1 | sed 's/\\.0$//') amdgpu.gpu.load  → ≈24 Samples"
+# shellcheck disable=SC2016,SC2028  # wörtliches Shell-Kommando als Hinweis-Text
+echo '  Dichte: pmlogsummary -y -S -120seconds $(ls -t /var/log/pcp/pmlogger/$(hostname) | grep -E "^[0-9]{8}" | head -1 | sed "s/\\.0$//") amdgpu.gpu.load  → ≈24 Samples'
