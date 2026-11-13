@@ -1,0 +1,143 @@
+#!/usr/bin/python3
+"""
+amdgpu-gtt-mmv: exportiert AMD-GPU-Details, die das pmdaamdgpu nicht liefert,
+als PCP-MMV-Metriken:
+
+    mmv.amdgpu.gtt_used   [bytes, instant]   – tatsächlich von der GPU belegter
+    mmv.amdgpu.gtt_total  [bytes, discrete]    Speicher (wichtig bei
+                                               Unified-Memory-APUs, Strix Halo)
+    mmv.amdgpu.gfxclk     [MHz,  instant]    – aktueller Grafiktakt (sclk)
+
+Quelldaten: /sys/class/drm/card*/device/{mem_info_gtt_*,hwmon/freq1_input,pp_dpm_sclk,pp_dpm_mclk}
+"""
+import ctypes
+import glob
+import os
+import re
+import sys
+import time
+
+from pcp import mmv
+
+MMV_FILE = "amdgpu"
+CLUSTER = 66
+INDOM = 1
+
+PM_TYPE_U64 = 3
+PM_SEM_INSTANT = 2
+PM_SEM_DISCRETE = 3
+BYTES = mmv.pmUnits()
+BYTES.dimSpace = 1  # bytes
+
+REFRESH_SECONDS = 2
+
+_keepalive = []  # Referenzen auf ctypes-Arrays gegen Garbage Collection
+
+
+def sysfs_devices():
+    """{card-Name: Device-Pfad} für alle Karten mit GTT-Anzeige"""
+    out = {}
+    for f in sorted(glob.glob("/sys/class/drm/card[0-9]*/device/mem_info_gtt_used")):
+        dev_dir = os.path.dirname(f)
+        card = os.path.basename(os.path.dirname(dev_dir))
+        out[card] = dev_dir
+    return out
+
+
+def read_int(path):
+    try:
+        with open(path) as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def read_gfxclk_mhz(dev):
+    """Aktueller Grafiktakt in MHz: hwmon freq1_input (Hz), sonst pp_dpm_sclk"""
+    for h in glob.glob(dev + "/hwmon/hwmon*/freq1_input"):
+        v = read_int(h)
+        if v:
+            return v // 1_000_000
+    return read_dpm_active(dev + "/pp_dpm_sclk")
+
+
+def read_dpm_active(path):
+    """Aktiven Zustand aus pp_dpm_* lesen ('1: 2279Mhz *' -> 2279)"""
+    try:
+        with open(path) as f:
+            lines = [l for l in f.read().splitlines() if l.strip()]
+        active = [l for l in lines if l.strip().endswith("*")] or lines[:1]
+        m = re.search(r"(\d+)\s*Mhz", active[0], re.I)
+        return int(m.group(1)) if m else None
+    except OSError:
+        return None
+
+
+def build(devs):
+    names = sorted(devs)
+    inst_arr = (mmv.mmv_instance * len(names))()
+    for i, name in enumerate(names):
+        inst_arr[i] = mmv.mmv_instance(i + 1, name.encode())
+    _keepalive.append(inst_arr)
+
+    indom = mmv.mmv_indom(INDOM, shorttext=b"AMD GPU cards (DRM)")
+    indom.count = len(names)
+    indom.instances = ctypes.cast(inst_arr, ctypes.POINTER(mmv.mmv_instance))
+
+    metrics = [
+        mmv.mmv_metric(b"gtt_used", 0, PM_TYPE_U64, PM_SEM_INSTANT, BYTES, INDOM,
+                       shorttext=b"GTT memory used",
+                       helptext=b"GTT memory currently allocated to the GPU (bytes)"),
+        mmv.mmv_metric(b"gtt_total", 1, PM_TYPE_U64, PM_SEM_DISCRETE, BYTES, INDOM,
+                       shorttext=b"GTT memory total",
+                       helptext=b"Total GTT address space available to the GPU (bytes)"),
+        mmv.mmv_metric(b"gfxclk", 2, PM_TYPE_U64, PM_SEM_INSTANT, mmv.pmUnits(), INDOM,
+                       shorttext=b"GPU clock (MHz)",
+                       helptext=b"Current graphics clock, hwmon sclk (MHz)"),
+        mmv.mmv_metric(b"memclk", 3, PM_TYPE_U64, PM_SEM_INSTANT, mmv.pmUnits(), INDOM,
+                       shorttext=b"Memory clock (MHz)",
+                       helptext=b"Current memory clock, pp_dpm_mclk (MHz)"),
+    ]
+    stats = mmv.MemoryMappedValues(MMV_FILE, 0, CLUSTER)
+    stats.add_indoms([indom])
+    stats.add_metrics(metrics)
+    stats.start()
+    if not stats.started():
+        raise RuntimeError("mmv_stats_init fehlgeschlagen")
+    return stats
+
+
+def main():
+    devs = sysfs_devices()
+    if not devs:
+        sys.stderr.write("amdgpu-gtt-mmv: keine GPU mit mem_info_gtt_used gefunden\n")
+        sys.exit(1)
+    stats = build(devs)
+    sys.stderr.write(f"amdgpu-gtt-mmv: exportiere {sorted(devs)} als mmv.amdgpu.*\n")
+
+    last_cards = None
+    while True:
+        try:
+            devs = sysfs_devices()
+            if sorted(devs) != last_cards:
+                if last_cards is not None:
+                    stats.stop()
+                    stats = build(devs)
+                last_cards = sorted(devs)
+            for name in devs:
+                used = read_int(os.path.join(devs[name], "mem_info_gtt_used"))
+                total = read_int(os.path.join(devs[name], "mem_info_gtt_total"))
+                if used is not None:
+                    stats.lookup_set(b"gtt_used", name, used)
+                if total is not None:
+                    stats.lookup_set(b"gtt_total", name, total)
+                gfx = read_gfxclk_mhz(devs[name])
+                if gfx is not None:
+                    stats.lookup_set(b"gfxclk", name, gfx)
+        except Exception as e:  # Daemon darf nicht sterben
+            sys.stderr.write(f"amdgpu-gtt-mmv: {e}\n")
+        time.sleep(REFRESH_SECONDS)
+
+
+if __name__ == "__main__":
+    main()

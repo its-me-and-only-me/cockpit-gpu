@@ -1,0 +1,15 @@
+[Unit]
+Description=PCP MMV exporter for AMD GPU GTT memory (sysfs mem_info_gtt)
+After=pmcd.service
+Wants=pmcd.service
+
+[Service]
+ExecStart=/usr/local/bin/amdgpu-gtt-mmv
+User=pcp
+Group=pcp
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
