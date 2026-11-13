@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPU — Cockpit</title>
+<link rel="stylesheet" href="gpu.css" />
+    <script src="../base1/cockpit.js"></script>
+    <script src="gpu.js"></script>
+</head>
+<body class="pf-v6-m-tabular-nums">
+
+<header>
+    <h1>GPU</h1>
+    <span id="device">AMD GPU (PCP)</span>
+</header>
+<div id="status">Lade …</div>
+<div id="banner">
+    pmproxy ist nicht erreichbar. Bitte <code>pmcd</code>, <code>pmlogger</code>, <code>pmproxy</code> und
+    <code>valkey</code>/<code>redis</code> prüfen (siehe auch <a href="/metrics">Metriken-Seite</a>).
+</div>
+
+<div class="toolbar">
+    <label for="window">Zeitraum</label>
+    <select id="window">
+        <option value="3600" selected>1 Stunde</option>
+        <option value="21600">6 Stunden</option>
+        <option value="86400">24 Stunden</option>
+        <option value="604800">7 Tage</option>
+    </select>
+    <label for="refresh">Aktualisierung</label>
+    <select id="refresh">
+        <option value="5">alle 5 s</option>
+        <option value="15">alle 15 s</option>
+        <option value="30" selected>alle 30 s</option>
+        <option value="60">alle 60 s</option>
+        <option value="0">Aus</option>
+    </select>
+    <button id="btn-refresh" type="button" title="Jetzt aktualisieren">&#8635; Aktualisieren</button>
+</div>
+<div class="grid" id="charts"></div>
+
+<section id="history">
+    <h2>Historie</h2>
+    <div class="toolbar">
+        <label for="hist-date">Springe zu</label>
+        <select id="hist-date"></select>
+        <div class="dd" id="vis-dd">
+            <button id="vis-btn" type="button" aria-haspopup="true" title="Sichtbare Graphen">Graphen ▾</button>
+            <div id="vis-menu" class="dd-menu" hidden></div>
+        </div>
+        <button id="btn-hist-refresh" type="button" title="Historie neu laden">&#8635;</button>
+    </div>
+    <div id="hist-hours"><div class="empty">Lade …</div></div>
+</section>
+
+</body>
+</html>

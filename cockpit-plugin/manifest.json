@@ -1,0 +1,20 @@
+{
+    "name": "gpu",
+    "version": "1.1",
+    "requires": {
+        "cockpit": "266"
+    },
+    "content-security-policy": "connect-src 'self' ws: wss: http://localhost:44322 http://127.0.0.1:44322",
+    "menu": {
+        "index": {
+            "label": "GPU",
+            "order": 55,
+            "docs": [
+                {
+                    "label": "Performance Co-Pilot",
+                    "url": "https://pcp.readthedocs.io/en/latest/"
+                }
+            ]
+        }
+    }
+}

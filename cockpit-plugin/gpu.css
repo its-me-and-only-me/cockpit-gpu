@@ -1,0 +1,103 @@
+:root {
+    --bg: #151515;
+    --card: #1f1f1f;
+    --border: #434343;
+    --text: #f0f0f0;
+    --muted: #b8bbbe;
+    --accent: #06c;
+    --line: #4db6ff;
+    --fill: rgba(77, 182, 255, 0.15);
+}
+@media (prefers-color-scheme: light) {
+    :root {
+        --bg: #f0f0f0;
+        --card: #ffffff;
+        --border: #d2d2d2;
+        --text: #151515;
+        --muted: #6a6e73;
+        --line: #06c;
+        --fill: rgba(0, 102, 204, 0.12);
+    }
+}
+* { box-sizing: border-box; }
+body {
+    margin: 0;
+    padding: 1rem 1.5rem 2rem;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Red Hat Text", "Open Sans", sans-serif;
+    font-size: 14px;
+}
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 1rem; margin-bottom: .25rem; }
+header h1 { font-size: 1.4rem; font-weight: 500; margin: 0; }
+#device { color: var(--muted); }
+#status { color: var(--muted); min-height: 1.2em; margin-bottom: 1rem; }
+#banner {
+    display: none; background: #7d1007; color: #fff; padding: .75rem 1rem;
+    border-radius: 4px; margin-bottom: 1rem;
+}
+#banner a { color: #73bcf7; }
+.toolbar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-bottom: 1rem; }
+.toolbar label { color: var(--muted); }
+select, button {
+    background: var(--card); color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; padding: .25rem .5rem;
+}
+#btn-refresh { padding: .25rem .7rem; cursor: pointer; }
+#btn-refresh:hover:not(:disabled) { border-color: var(--accent); }
+#btn-refresh.busy { opacity: .5; cursor: wait; }
+.grid {
+    display: grid; gap: 1rem;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+}
+.card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+    padding: .75rem 1rem 1rem;
+}
+.card.clickable { cursor: pointer; }
+.card.clickable:hover { border-color: var(--accent); }
+.card h2 {
+    margin: 0 0 .1rem; font-size: .8rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+}
+.card .now { font-size: 1.6rem; font-weight: 500; line-height: 1.2; }
+.card .now small { font-size: .9rem; color: var(--muted); font-weight: 400; }
+.card .sub { color: var(--muted); font-size: .8rem; min-height: 1.1em; }
+svg { display: block; width: 100%; margin-top: .3rem; }
+.axis { fill: var(--muted); font-size: 9px; }
+.gridline { stroke: var(--border); stroke-width: .5; stroke-dasharray: 2 3; }
+.plot { fill: none; stroke: var(--line); stroke-width: 1.6; }
+.area { fill: var(--fill); stroke: none; }
+.empty { color: var(--muted); font-style: italic; padding: 1rem 0; }
+
+/* ---- Historie (Muster: Cockpit-Metriken-Seite) ---- */
+#history { margin-top: 2rem; }
+#history h2 { font-size: 1.1rem; font-weight: 500; margin: 0 0 .6rem; }
+.metrics-time { font-size: 1rem; font-weight: 500; margin: .8rem 0 .3rem; color: var(--text); }
+.hour-block { border-bottom: 1px solid var(--border); padding: .35rem 0 .55rem; }
+.hour-head { display: flex; align-items: baseline; gap: .5rem; }
+.hour-time { color: var(--muted); font-size: .85rem; font-weight: 700; }
+.hour-toggle {
+    background: none; border: none; color: var(--muted); cursor: pointer;
+    padding: 0 .2rem; font-size: .8rem; line-height: 1;
+}
+.hour-toggle:hover { color: var(--text); }
+.hour-graphs {
+    display: grid; gap: .5rem;
+    grid-template-columns: repeat(var(--graph-cnt, 1), minmax(0, 1fr));
+}
+.hour-cell .glabel {
+    font-size: .72rem; color: var(--muted); margin-top: .25rem;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.hour-block svg { height: 44px; }
+.hour-block.expanded svg { height: 150px; }
+
+/* Klick-Dropdown */
+.dd { position: relative; display: inline-block; }
+.dd-menu {
+    position: absolute; top: calc(100% + 4px); left: 0; z-index: 20;
+    background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+    padding: .5rem .75rem; min-width: 220px; box-shadow: 0 4px 12px rgba(0,0,0,.35);
+}
+.dd-menu label { display: block; padding: .2rem 0; color: var(--text); cursor: pointer; white-space: nowrap; }
