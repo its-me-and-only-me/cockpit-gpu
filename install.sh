@@ -54,7 +54,11 @@ fi
 # pmseries braucht einen Key-Value-Store; pcp-zeroconf zieht ihn NICHT
 # automatisch mit. Fedora ≥ 41 nutzt valkey, älteres Fedora/EPEL redis.
 step "pmproxy und valkey/redis aktivieren"
-systemctl enable --now pmproxy
+# enable --now auf einem defekten pmproxy würde mit set -e abbrechen, bevor
+# der Namespace-Filter (3b) ihn reparieren kann — daher entkoppelt.
+systemctl enable pmproxy
+timeout 90 systemctl start pmproxy || \
+    echo "   (pmproxy noch nicht aktiv — gleich folgt der Namespace-Filter, Restart=always zieht ihn danach hoch)"
 if ! systemctl cat valkey.service >/dev/null 2>&1 &&
    ! systemctl cat redis.service >/dev/null 2>&1; then
     echo "   (kein valkey/redis installiert — pmseries-Index wird nachinstalliert)"
@@ -70,7 +74,37 @@ else
     systemctl enable --now redis
 fi
 
-# --- 3b. Härtung: unauthentifizierte PCP-Dienste nur auf Loopback -----------
+# --- 3b. PID-namespace-sichere PCP-Prozesssuche (Incus/LXC) ------------------
+# Die PCP-Service-Wrapper suchen Daemons per Prozessname über ps und
+# erwischen aus dem Host heraus auch Daemons in Incus-/LXC-Containern
+# (Upstream-Filter kennt nur libpod-Cgroup-Muster). Wegen des UID-Mappings
+# können sie die nicht stoppen -> "won't die!" und der Host-Dienst startet
+# nicht. /etc/pcp.env (rpm-%config-Datei) bekommt einen Namespace-exakten
+# Aufsatz; das wirkt ohne Dienst-Neustart (wird bei jedem Wrapper-Lauf
+# neu gesourct). Muss VOR den Dienst-Neustarts laufen.
+step "PCP-Prozesssuche PID-namespace-sicher machen"
+python3 - <<'PYEOF'
+import os
+
+MARK_B = "# >>> cockpit-gpu: PID-namespace-sichere Prozesssuche >>>"
+MARK_E = "# <<< cockpit-gpu: PID-namespace-sichere Prozesssuche <<<"
+path = "/etc/pcp.env"
+block = open("pcp/pcp-namespace-safe.sh").read()
+src = open(path).read()
+if MARK_B in src and MARK_E in src:
+    pre, rest = src.split(MARK_B, 1)
+    _, post = rest.split(MARK_E, 1)
+    src = pre + post
+src = src.rstrip("\n") + "\n\n" + MARK_B + "\n" + block.rstrip("\n") + "\n" + MARK_E + "\n"
+tmp = path + ".tmp-install"
+with open(tmp, "w") as f:
+    f.write(src)
+    os.fsync(f.fileno())
+os.replace(tmp, path)
+print("   (/etc/pcp.env: Namespace-Filter gesetzt)")
+PYEOF
+
+# --- 3c. Härtung: unauthentifizierte PCP-Dienste nur auf Loopback -----------
 # Die pmseries-API ist ohne Authentifizierung; pcp-zeroconf lässt pmproxy
 # sonst auf allen Flächen lauschen. Das Plugin hängt ausschließlich über
 # die Cockpit-Bridge an 127.0.0.1 — extern wird nichts gebraucht.

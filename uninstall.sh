@@ -10,6 +10,30 @@ step() { echo "== $*"; }
 step "Cockpit-Plugin entfernen"
 rm -rf /usr/local/share/cockpit/gpu /usr/share/cockpit/gpu
 
+step "PCP-Namespace-Filter aus /etc/pcp.env entfernen"
+python3 - <<'PYEOF'
+import os
+
+MARK_B = "# >>> cockpit-gpu: PID-namespace-sichere Prozesssuche >>>"
+MARK_E = "# <<< cockpit-gpu: PID-namespace-sichere Prozesssuche <<<"
+path = "/etc/pcp.env"
+try:
+    src = open(path).read()
+except OSError:
+    raise SystemExit(0)
+if MARK_B in src and MARK_E in src:
+    pre, rest = src.split(MARK_B, 1)
+    _, post = rest.split(MARK_E, 1)
+    tmp = path + ".tmp-uninstall"
+    with open(tmp, "w") as f:
+        f.write(pre.rstrip("\n") + "\n" + post.lstrip("\n"))
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+    print("   (/etc/pcp.env: Namespace-Filter entfernt)")
+else:
+    print("   (kein Namespace-Filter gefunden — nichts zu tun)")
+PYEOF
+
 step "MMV-Exporter deaktivieren"
 systemctl disable --now amdgpu-mmv.service || true
 rm -f /etc/systemd/system/amdgpu-mmv.service /usr/local/bin/amdgpu-gtt-mmv
