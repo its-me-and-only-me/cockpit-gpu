@@ -8,7 +8,11 @@ als PCP-MMV-Metriken:
                                                Unified-Memory-APUs, Strix Halo)
     mmv.amdgpu.gfxclk     [MHz,  instant]    – aktueller Grafiktakt (sclk)
 
-Quelldaten: /sys/class/drm/card*/device/{mem_info_gtt_*,hwmon/freq1_input,pp_dpm_sclk,pp_dpm_mclk}
+Speicher-Takt wird bewusst nicht exportiert (beim LPDDR5 einer Strix Halo
+praktisch konstant; früher entfernt, aber als Metric registriert liegengelassen
+— das war ein Fehler, siehe Code-Review E2).
+
+Quelldaten: /sys/class/drm/card*/device/{mem_info_gtt_*,hwmon/freq1_input,pp_dpm_sclk}
 """
 import ctypes
 import glob
@@ -53,7 +57,12 @@ def read_int(path):
 
 
 def read_gfxclk_mhz(dev):
-    """Aktueller Grafiktakt in MHz: hwmon freq1_input (Hz), sonst pp_dpm_sclk"""
+    """Aktueller Grafiktakt in MHz.
+
+    Achtung (Review E5): hwmon freq1_input liefert je nach Treiber Hz ODER kHz;
+    der amdgpu-Treiber dokumentiert Hz, daher //1_000_000. Nicht auf Intel/
+    NVIDIA „korrigieren“ — für die ist dieses Tool ohnehin nicht gebaut.
+    """
     for h in glob.glob(dev + "/hwmon/hwmon*/freq1_input"):
         v = read_int(h)
         if v:
@@ -75,9 +84,14 @@ def read_dpm_active(path):
 
 def build(devs):
     names = sorted(devs)
+    # Instanz-IDs sind positionell über sortierte Kartenamen (Review E4):
+    # ändert sich die Kartenmenge, verschieben sich die IDs; pmdammv kann die
+    # alte Tabelle bis zum pmcd-Neustart halten. Auf Zielrechnern statisch.
     inst_arr = (mmv.mmv_instance * len(names))()
     for i, name in enumerate(names):
         inst_arr[i] = mmv.mmv_instance(i + 1, name.encode())
+    # bei Rebuild alte Arrays fallen lassen (Review E3)
+    _keepalive.clear()
     _keepalive.append(inst_arr)
 
     indom = mmv.mmv_indom(INDOM, shorttext=b"AMD GPU cards (DRM)")
@@ -94,9 +108,6 @@ def build(devs):
         mmv.mmv_metric(b"gfxclk", 2, PM_TYPE_U64, PM_SEM_INSTANT, mmv.pmUnits(), INDOM,
                        shorttext=b"GPU clock (MHz)",
                        helptext=b"Current graphics clock, hwmon sclk (MHz)"),
-        mmv.mmv_metric(b"memclk", 3, PM_TYPE_U64, PM_SEM_INSTANT, mmv.pmUnits(), INDOM,
-                       shorttext=b"Memory clock (MHz)",
-                       helptext=b"Current memory clock, pp_dpm_mclk (MHz)"),
     ]
     stats = mmv.MemoryMappedValues(MMV_FILE, 0, CLUSTER)
     stats.add_indoms([indom])
@@ -115,27 +126,34 @@ def main():
     stats = build(devs)
     sys.stderr.write(f"amdgpu-gtt-mmv: exportiere {sorted(devs)} als mmv.amdgpu.*\n")
 
-    last_cards = None
+    last_cards = sorted(devs)
+    last_error = None
     while True:
         try:
             devs = sysfs_devices()
-            if sorted(devs) != last_cards:
-                if last_cards is not None:
-                    stats.stop()
-                    stats = build(devs)
+            if devs and sorted(devs) != last_cards:
+                # Rebuild nur mit nicht-leerer Kartenmenge (Review E1):
+                # ein leeres sysfs (Treiber-Unload) würde eine Indom mit
+                # Count 0 erzeugen — undefines Verhalten im MMV-Layer.
+                stats.stop()
+                stats = build(devs)
                 last_cards = sorted(devs)
             for name in devs:
                 used = read_int(os.path.join(devs[name], "mem_info_gtt_used"))
                 total = read_int(os.path.join(devs[name], "mem_info_gtt_total"))
                 if used is not None:
-                    stats.lookup_set(b"gtt_used", name, used)
+                    stats.lookup_set(b"gtt_used", name.encode(), used)
                 if total is not None:
-                    stats.lookup_set(b"gtt_total", name, total)
+                    stats.lookup_set(b"gtt_total", name.encode(), total)
                 gfx = read_gfxclk_mhz(devs[name])
                 if gfx is not None:
-                    stats.lookup_set(b"gfxclk", name, gfx)
+                    stats.lookup_set(b"gfxclk", name.encode(), gfx)
+            last_error = None
         except Exception as e:  # Daemon darf nicht sterben
-            sys.stderr.write(f"amdgpu-gtt-mmv: {e}\n")
+            msg = f"amdgpu-gtt-mmv: {e}"
+            if msg != last_error:  # Persistenzfehler nicht alle 2 s protokollieren (E7)
+                sys.stderr.write(msg + "\n")
+                last_error = msg
         time.sleep(REFRESH_SECONDS)
 
 

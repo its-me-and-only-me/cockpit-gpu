@@ -1,5 +1,5 @@
 [Unit]
-Description=PCP MMV exporter for AMD GPU GTT memory (sysfs mem_info_gtt)
+Description=PCP MMV exporter for AMD GPU GTT memory and gfxclk (sysfs)
 After=pmcd.service
 Wants=pmcd.service
 
@@ -10,6 +10,14 @@ Group=pcp
 Restart=always
 RestartSec=5
 Nice=10
+# Härtung: der Prozess braucht nur sysfs-Lesezugriff und das MMV-Verzeichnis.
+NoNewPrivileges=yes
+ProtectHome=yes
+# Auf „nackten" Hosts zusätzlich empfohlen — in Containern (LXC) scheitern
+# sie hier mit 226/NAMESPACE (keine eigenen Mount-Namespaces):
+#   PrivateTmp=yes
+#   ProtectSystem=strict
+#   ReadWritePaths=/var/lib/pcp/tmp/mmv /var/lib/pcp/config/mmv
 
 [Install]
 WantedBy=multi-user.target
