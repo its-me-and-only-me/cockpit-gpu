@@ -35,23 +35,80 @@ function dateStr(d) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-"
 const fmtFullDate = new Intl.DateTimeFormat("de-DE", { dateStyle: "full" });
 function dayLabel(ds) { return ds === dateStr(new Date()) ? "Heute" : fmtFullDate.format(new Date(ds + "T00:00:00")); }
 
-/* ---------- pmproxy-Zugriff: erst direkter fetch, sonst Cockpit-Bridge ---------- */
+/* „hübsche" Obergrenze (1/2/2.5/5/10 × 10^n), damit die Y-Achse der
+   Live-Karten nicht bei jedem Refresh um ein paar Einheiten springt */
+function niceMax(v) {
+    if (!(v > 0)) return 1;
+    const p = Math.pow(10, Math.floor(Math.log10(v)));
+    const d = v / p;
+    const m = d <= 1 ? 1 : d <= 2 ? 2 : d <= 2.5 ? 2.5 : d <= 5 ? 5 : 10;
+    return m * p;
+}
 
-async function apiGet(path) {
-    try {
-        const r = await fetch("http://localhost:44322" + path, { cache: "no-store" });
-        if (r.ok)
-            return await r.json();
-    } catch (e) { /* Fallback */ }
+/* ---------- pmproxy-Zugriff ----------
+   Primär läuft alles über den Cockpit-Bridge-Kanal cockpit.http(): der
+   verbindet SERVERSEITIG nach 127.0.0.1:44322 und funktioniert dadurch
+   auch bei Fernzugriff auf Cockpit.  Ein direktes fetch() aus dem Browser
+   würde bei Fernzugriff den Client-Rechner adressieren (falsche Daten,
+   wenn dort zufällig ein eigener pmproxy läuft) — es wird daher nur
+   benutzt, wenn die Seite selbst von diesem Rechner kommt.
+   Wichtig: cockpit.http(port, opts).get(pfad) — der Port gehört als
+   ERSTER Positional-Argument übergeben, und get() sendet body:"" — bei
+   request() ohne Body wartet der Bridge-Kanal ewig auf Nachrichten-EOF. */
+
+const seriesCache = new Map();      /* metric -> Promise<ids> */
+
+async function bridgeGet(path) {
     if (!window.cockpit || !cockpit.http)
-        throw new Error("weder fetch noch cockpit.http verfügbar");
+        throw new Error("cockpit.http nicht verfügbar");
     let req;
     try {
-        req = cockpit.http({ address: "127.0.0.1", port: PMPROXY_PORT });
+        req = cockpit.http(PMPROXY_PORT, { address: "127.0.0.1" });
     } catch (e) {
         throw new Error("cockpit.http: " + e.message);
     }
-    const body = await req.request({ path: path, method: "GET" });
+    const p = req.get(path);
+    /* Timeout-Wächter: .close() verwirft den Kanal, das Promise rejectet */
+    let timer;
+    try {
+        return await Promise.race([
+            p,
+            new Promise((_, rej) => {
+                timer = setTimeout(() => {
+                    try { p.close(); } catch (e) { /* egal */ }
+                    rej(new Error("pmproxy-Antwortzeit überschritten"));
+                }, 30000);
+            }),
+        ]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+async function directGet(path) {
+    const r = await fetch("http://localhost:" + PMPROXY_PORT + path,
+                          { cache: "no-store", signal: AbortSignal.timeout(15000) });
+    if (!r.ok)
+        throw new Error("pmproxy HTTP " + r.status);
+    return await r.json();
+}
+
+/* direkt-transportabler Seiten-Check: hostname des Frames == Rechner,
+   der auch die Cockpit-Seite ausliefert */
+const servedLocally = ["localhost", "127.0.0.1", "[::1]", ""].includes(window.location.hostname);
+
+async function apiGet(path) {
+    let body;
+    if (servedLocally) {
+        try {
+            body = await directGet(path);
+        } catch (e) {
+            body = null;  /* weiter über Bridge */
+        }
+        if (body !== null)
+            return body;
+    }
+    body = await bridgeGet(path);
     try {
         return JSON.parse(body);
     } catch (e) {
@@ -59,11 +116,21 @@ async function apiGet(path) {
     }
 }
 
+/* Series-IDs pro Metrik cachen (pmseries-IDs sind stabil) */
 function seriesFor(metric) {
-    return apiGet("/series/query?expr=" + encodeURIComponent(metric)).then(ids => Array.isArray(ids) ? ids : []);
+    if (!seriesCache.has(metric)) {
+        seriesCache.set(metric,
+            apiGet("/series/query?expr=" + encodeURIComponent(metric))
+                .then(ids => Array.isArray(ids) ? ids : [])
+                .catch(e => { seriesCache.delete(metric); throw e; }));
+    }
+    return seriesCache.get(metric);
 }
 
-/* Werte im Fenster [startS, finishS] (Epoch-Sekunden), gemittelte Zeitpunkte */
+/* Werte im Fenster [startS, finishS] (Epoch-Sekunden), gemittelte Zeitpunkte.
+   Achtung: mehrere Instanzen (Multi-GPU) werden hier pro Zeitstrang
+   zusammengeführt — dieses Modul ist für DIESEN Rechner mit genau einer
+   GPU gebaut (siehe README „Bekannte Grenzen"). */
 function valuesFor(ids, startS, finishS) {
     if (!ids.length) return Promise.resolve([]);
     return Promise.all(ids.map(id =>
@@ -82,6 +149,22 @@ function valuesFor(ids, startS, finishS) {
 
 async function fetchMetric(metric, startS, finishS) {
     return valuesFor(await seriesFor(metric), startS, finishS);
+}
+
+/* String-Metriken (z. B. amdgpu.cardname) liefern JSON-quotierte Texte —
+   die Number-Filterung von valuesFor würde sie verwursten, daher eigener Pfad */
+async function fetchLatestString(metric) {
+    const ids = await seriesFor(metric);
+    if (!ids.length)
+        return null;
+    const pts = await apiGet("/series/values?series=" + ids[0] + "&samples=1");
+    if (!pts || !pts.length)
+        return null;
+    let v = String(pts[pts.length - 1].value);
+    if (v.startsWith('"')) {
+        try { v = JSON.parse(v); } catch (e) { /* Rohwert behalten */ }
+    }
+    return v || null;
 }
 
 /* ---------- SVG-Diagramme ---------- */
@@ -141,6 +224,31 @@ function makeChart(container, pts, panel, height, labelFmt, yMaxOverride) {
     container.appendChild(svg);
 }
 
+/* punktreduzierte Zeichengrundlage: pro Zielbucket das Maximum (Preserves
+   Lastspitzen bei Last/Leistung), damit große Fenster (7 Tage ≈ 120 k
+   Rohpunkte/Metrik) nicht als 120-k-Polyline gezeichnet werden */
+function decimate(pts, maxPts) {
+    if (pts.length <= maxPts)
+        return pts;
+    const nb = maxPts;
+    const out = [];
+    let bucket = -1, bv = -Infinity, bt = 0;
+    for (const p of pts) {
+        const b = Math.floor(p.timestamp / ((pts[pts.length - 1].timestamp - pts[0].timestamp + 1) / nb));
+        if (b !== bucket) {
+            if (bucket >= 0) out.push({ timestamp: bt, value: bv });
+            bucket = b; bv = p.value; bt = p.timestamp;
+        } else if (p.value > bv) {
+            bv = p.value; bt = p.timestamp;
+        }
+    }
+    if (bucket >= 0) out.push({ timestamp: bt, value: bv });
+    const last = pts[pts.length - 1];
+    if (out[out.length - 1].timestamp !== last.timestamp)
+        out.push({ timestamp: last.timestamp, value: last.value });
+    return out;
+}
+
 /* ---------- Live-Karten ---------- */
 
 let cards = [];
@@ -149,12 +257,19 @@ function makeCard(panel) {
     const card = document.createElement("div");
     card.className = "card clickable";
     card.title = "Graph in der Historie anzeigen";
-    card.innerHTML =
-        '<h2>' + panel.title + '</h2>' +
-        '<div class="now">—</div>' +
-        '<div class="sub"></div>' +
-        '<div class="plot-area"></div>';
-    card.addEventListener("click", () => {
+    card.setAttribute("role", "button");
+    card.setAttribute("tabindex", "0");
+    const h2 = document.createElement("h2");
+    h2.textContent = panel.title;
+    const now = document.createElement("div");
+    now.className = "now";
+    now.textContent = "—";
+    const sub = document.createElement("div");
+    sub.className = "sub";
+    const plot = document.createElement("div");
+    plot.className = "plot-area";
+    card.append(h2, now, sub, plot);
+    const activate = () => {
         if (!visibility[panel.key]) {
             visibility[panel.key] = true;
             syncVisMenu();
@@ -162,6 +277,13 @@ function makeCard(panel) {
             loadHistory(true);
         }
         el("history").scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    card.addEventListener("click", activate);
+    card.addEventListener("keydown", ev => {
+        if (ev.key === "Enter" || ev.key === " ") {
+            ev.preventDefault();
+            activate();
+        }
     });
     el("charts").appendChild(card);
     card._panel = panel;
@@ -172,6 +294,7 @@ function updateCard(card, pts, dynMax) {
     const now = card.querySelector(".now");
     const sub = card.querySelector(".sub");
     const fmt = card._panel.fmt;
+    now.innerHTML = "";
     if (!pts.length) {
         now.textContent = "–";
         sub.textContent = "";
@@ -180,11 +303,18 @@ function updateCard(card, pts, dynMax) {
     }
     const vals = pts.map(p => p.value);
     const cur = vals[vals.length - 1];
+    const max = Math.max(...vals);
     const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
-    now.innerHTML = fmt(cur) + " <small>aktuell</small>";
-    sub.textContent = "Ø " + fmt(avg) + "  ·  Max " + fmt(Math.max(...vals)) +
+    now.textContent = fmt(cur);
+    const small = document.createElement("small");
+    small.textContent = " aktuell";
+    now.appendChild(small);
+    sub.textContent = "Ø " + fmt(avg) + "  ·  Max " + fmt(max) +
                       (dynMax ? "  ·  von " + fmt(dynMax) : "");
-    makeChart(card.querySelector(".plot-area"), pts, card._panel, 90, hm, dynMax);
+    /* feste, hübsche Obergrenze gegen Achsen-Flackern (M6) */
+    const yFix = dynMax !== undefined ? dynMax
+        : (card._panel.yMax !== undefined ? card._panel.yMax : niceMax(max));
+    makeChart(card.querySelector(".plot-area"), decimate(pts, 1000), card._panel, 90, hm, yFix);
 }
 
 /* ---------- Historie (wie /metrics) ---------- */
@@ -193,16 +323,21 @@ let visibility = {};
 for (const p of PANELS)
     visibility[p.key] = true;
 
-let hist = null;               /* { day, buckets: {key: Map(minuteTs→avg)}, dayMax: {key}, gttTotal, loaded: Set } */
+let hist = null;               /* { day, buckets: {key: Map(minuteTs→avg)}, dayMax: {key}, gttTotal, gttTried, loaded: Set } */
 let expandedHours = new Set();
 let histBusy = false;
+let histPending = false;
 let lastHistLoad = 0;
 
 function visiblePanels() { return PANELS.filter(p => visibility[p.key]); }
 
 function savePrefs() {
     try {
-        localStorage.setItem("gpu-vis", JSON.stringify(PANELS.filter(p => visibility[p.key]).map(p => p.key)));
+        /* vollständige Map speichern, damit auch „alle aus" erhalten bleibt */
+        const map = {};
+        for (const p of PANELS)
+            map[p.key] = !!visibility[p.key];
+        localStorage.setItem("gpu-vis", JSON.stringify(map));
         localStorage.setItem("gpu-hist-date", el("hist-date").value);
     } catch (e) { /* egal */ }
 }
@@ -210,9 +345,9 @@ function savePrefs() {
 function loadPrefs() {
     try {
         const v = JSON.parse(localStorage.getItem("gpu-vis"));
-        if (Array.isArray(v) && v.length)
+        if (v && typeof v === "object")
             for (const p of PANELS)
-                visibility[p.key] = v.includes(p.key);
+                visibility[p.key] = !!v[p.key];
         const d = localStorage.getItem("gpu-hist-date");
         if (d && d <= dateStr(new Date()))
             el("hist-date").value = d;
@@ -250,6 +385,9 @@ function buildVisMenu() {
         lab.appendChild(document.createTextNode(" " + p.title));
         menu.appendChild(lab);
     }
+    /* Klicks IM Menü nicht ins Dokument durchreichen, sonst schließt es
+       sich bei jedem Anhaken selbst (M2) */
+    menu.addEventListener("click", ev => ev.stopPropagation());
     el("vis-btn").addEventListener("click", ev => {
         ev.stopPropagation();
         menu.hidden = !menu.hidden;
@@ -290,31 +428,39 @@ function addMinuteAvg(key, pts) {
 }
 
 async function loadHistory(full) {
-    if (histBusy) return;
+    if (histBusy) {
+        /* laufenden Load nicht verwerfen, sondern danach neu laden (M5) */
+        histPending = histPending || full;
+        return;
+    }
     histBusy = true;
     const box = el("hist-hours");
     try {
         const { day, d0, d1, isToday } = histWindow();
         if (full || !hist || hist.day !== day) {
-            hist = { day, buckets: {}, dayMax: {}, loaded: new Set(), gttTotal: undefined };
+            hist = { day, buckets: {}, dayMax: {}, loaded: new Set(), gttTotal: undefined, gttTried: false };
             expandedHours = new Set();
         }
+        const vis = visiblePanels();
         /* Teilaktualisierung (Auto-Refresh): nur laufende + vorige zwei Stunden */
         const from = (hist.loaded.size && !full)
             ? Math.max(d0, Math.floor(Date.now() / HOUR_MS) * 3600 - 2 * 3600)
             : d0;
-        await Promise.all(PANELS.map(async p => {
+        await Promise.all(vis.map(async p => {
             const start = (hist.loaded.has(p.key) && !full) ? from : d0;
             const pts = await fetchMetric(p.key, start, d1);
             addMinuteAvg(p.key, pts);
             hist.loaded.add(p.key);
         }));
-        if (!hist.gttTotal) {
-            const t = await fetchMetric("mmv.amdgpu.gtt_total", d0, d1);
-            hist.gttTotal = t.length ? t[t.length - 1].value : undefined;
+        if (!hist.gttTried && vis.some(p => p.maxKey)) {
+            hist.gttTried = true;
+            try {
+                const t = await fetchMetric("mmv.amdgpu.gtt_total", d0, d1);
+                hist.gttTotal = t.length ? t[t.length - 1].value : undefined;
+            } catch (e) { /* Skala fällt auf Automatik zurück */ }
         }
-        /* Tagesskalierung je Metrik */
-        for (const p of PANELS) {
+        /* Tagesskalierung je sichtbarer Metrik */
+        for (const p of vis) {
             const m = hist.buckets[p.key];
             if (!m || !m.size)
                 continue;
@@ -332,6 +478,10 @@ async function loadHistory(full) {
         box.appendChild(e);
     } finally {
         histBusy = false;
+        if (histPending) {
+            histPending = false;
+            loadHistory(true);
+        }
     }
 }
 
@@ -377,6 +527,7 @@ function renderHistory(isToday) {
         chevron.type = "button";
         chevron.className = "hour-toggle";
         chevron.setAttribute("aria-expanded", String(isExp));
+        chevron.setAttribute("aria-label", isExp ? "Stunde " + hm(hourTs) + " verkleinern" : "Stunde " + hm(hourTs) + " vergrößern");
         chevron.title = isExp ? "Stunde verkleinern" : "Stunde vergrößern";
         chevron.textContent = isExp ? "▴" : "▾";
         chevron.addEventListener("click", () => {
@@ -440,8 +591,8 @@ function refresh() {
     Promise.all([
         Promise.all(PANELS.map(p => fetchMetric(p.key, startS, finishS))),
         seriesFor("mmv.amdgpu.gtt_total").then(ids => valuesFor(ids, startS, finishS)),
-        fetchMetric("amdgpu.cardname", finishS - 86400, finishS),
-    ]).then(([perPanel, gttTotalPts, cardnamePts]) => {
+        fetchLatestString("amdgpu.cardname"),
+    ]).then(([perPanel, gttTotalPts, cardname]) => {
         el("banner").style.display = "none";
         const gttMax = gttTotalPts.length ? gttTotalPts[gttTotalPts.length - 1].value : undefined;
         let latest = 0;
@@ -450,8 +601,8 @@ function refresh() {
             if (pts.length)
                 latest = Math.max(latest, pts[pts.length - 1].timestamp);
         });
-        if (cardnamePts.length)
-            el("device").textContent = cardnamePts[cardnamePts.length - 1].value + " · PCP/pmseries";
+        if (cardname)
+            el("device").textContent = cardname + " · PCP/pmseries";
         el("status").textContent = latest
             ? "Quelle: PCP/pmseries · Aufzeichnung alle 5 s · letzter Datenpunkt " + hms(latest) +
               " · aktualisiert " + hms(Date.now())
@@ -487,6 +638,16 @@ function init() {
     el("btn-refresh").addEventListener("click", refresh);
     el("hist-date").addEventListener("change", () => { savePrefs(); loadHistory(true); });
     el("btn-hist-refresh").addEventListener("click", () => loadHistory(true));
+    /* Breite wird in SVG-Koordinaten ausgemessen → nach Resize neu zeichnen */
+    let resizeTimer = null;
+    window.addEventListener("resize", () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+            if (hist && hist.loaded.size)
+                renderHistory(hist.day === dateStr(new Date()));
+            refresh();
+        }, 300);
+    });
     refresh();
     loadHistory(true);
     applyRefreshTimer();

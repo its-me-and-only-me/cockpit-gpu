@@ -90,8 +90,8 @@ svg { display: block; width: 100%; margin-top: .3rem; }
     font-size: .72rem; color: var(--muted); margin-top: .25rem;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.hour-block svg { height: 44px; }
-.hour-block.expanded svg { height: 150px; }
+/* Höhe kommt allein aus JS (makeChart-Höhenattribut); hier nur Breite */
+.hour-block svg { width: 100%; }
 
 /* Klick-Dropdown */
 .dd { position: relative; display: inline-block; }
