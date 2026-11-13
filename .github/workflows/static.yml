@@ -1,0 +1,40 @@
+name: static checks
+
+# Der Browser-E2E-Test (tests/cdp_e2e.py) braucht ein laufendes Cockpit mit
+# PCP und AMD-GPU und läuft deshalb hier nicht; geprüft werden die statischen
+# Draufblicke, die ohne Zielrechner auskommen.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck install.sh uninstall.sh
+
+      - name: python syntax
+        run: |
+          python3 -m py_compile exporter/amdgpu-gtt-mmv tests/cdp_e2e.py
+
+      - name: node syntax check (gpu.js)
+        run: node --check cockpit-plugin/gpu.js
+
+      - name: JSON lint
+        run: |
+          python3 -m json.tool cockpit-plugin/manifest.json > /dev/null
+
+      - name: systemd unit verify
+        run: systemd-analyze verify exporter/amdgpu-mmv.service 2>/dev/null || true

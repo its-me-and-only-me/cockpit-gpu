@@ -29,16 +29,22 @@ daher die Kombination aus PCP-Datenerfassung + eigenem Frontend in diesem Repo.
         PCP-Archive (/var/log/pcp/pmlogger/…)
                         │
                         ▼  (Index)
-                     valkey  ──▶  pmproxy (REST auf :44322, pmseries-API)
-                                      │
-                                      ▼
- cockpit-plugin/  (fetch nach http://localhost:44322,
-                   Fallback über cockpit.http via Cockpit-Bridge)
+                    valkey  ──▶  pmproxy (REST auf :44322, pmseries-API)
+                                     ▲
+                                     │ 127.0.0.1 (serverseitig!)
+  Browser ── Cockpit-Bridge (WebSocket) ┘  cockpit.http(44322).get(...)
+     └─ (nur bei lokalem Seitenaufruf: direkter fetch nach localhost:44322)
 ```
 
 Das Frontend spricht die **pmseries-REST-API** von pmproxy an
-(`/series/query`, `/series/values`). Der direkte pmapi-Endpunkt
-`/pmapi/fetch` ist in pmproxy 7.2.2 nicht brauchbar (400) und wird nicht genutzt.
+(`/series/query`, `/series/values`). Primärer Transport ist der
+**Cockpit-Bridge-Kanal** `cockpit.http(44322, {address:'127.0.0.1'}).get(pfad)`:
+die Cockpit-Bridge verbindet dann *auf dem Server*, weshalb die Seite auch bei
+Fernzugriff auf Cockpit die richtigen Daten zeigt. Ein direktes `fetch()` im
+Browser würde bei Fernzugriff den Client-Rechner adressieren und wird deshalb
+nur benutzt, wenn die Seite selbst von diesem Rechner kommt (`localhost`).
+Der direkte pmapi-Endpunkt `/pmapi/fetch` ist in pmproxy 7.2.2 nicht brauchbar
+(400) und wird nicht genutzt.
 
 ## Metriken
 
@@ -50,10 +56,11 @@ Das Frontend spricht die **pmseries-REST-API** von pmproxy an
 | GPU-Takt (gfxclk)  | `mmv.amdgpu.gfxclk`        | MMV-Exporter (hwmon `freq1_input` = echte sclk, Fallback `pp_dpm_sclk`) | `amdgpu.gpu.clock` des PMDA ist auf dieser APU **konstant 1000 MHz** und damit wertlos |
 | Leistung           | `amdgpu.gpu.average_power` | pmdaamdgpu | |
 
-Der Exporter exportiert `amdgpu.*`-Metriknamen zusätzlich unverändert mit
-(`gpu/memory.…`), aufgezeichnet werden über die pmlogconf-Gruppen aber nur die
-obigen + `gtt_total`/Hilfsgrößen. Der Speicher-Takt (`memclk`) wurde bewusst
-entfernt — er steht beim LPDDR5 praktisch immer auf demselben Wert.
+Der MMV-Exporter liefert ausschließlich `mmv.amdgpu.*`; die `amdgpu.*`-Namen
+kommen komplett vom PMDA. Der Speicher-Takt (`memclk`) wurde bewusst entfernt —
+er steht beim LPDDR5 praktisch immer auf demselben Wert. (Nach dem Entfernen
+kann `mmv.amdgpu.memclk` noch als Wert-0-Metrik in `pminfo` auftauchen, bis
+pmcd neu gestartet wird — pmdammv-Puffer, kosmetisch.)
 
 ## Cockpit-Modul (Frontend)
 
@@ -79,10 +86,11 @@ entfernt — er steht beim LPDDR5 praktisch immer auf demselben Wert.
     Stunde−2 h, max. minütlich).
 * **CSP-konform**: keine Inline-Styles/Scripts; `manifest.json` erklärt
   `connect-src … http://localhost:44322 http://127.0.0.1:44322`.
-* **Datenweg**: primär `fetch` nach `http://localhost:44322` (Mixed-Content-
-  Ausnahme für localhost, pmproxy-CORS `*`); Fallback `cockpit.http({address,
-  port}).request({path, method})` — funktioniert auch bei Remote-Zugriff auf
-  die Cockpit-URL.
+  `ws:`/`wss:` ist nötig, weil der Cockpit-Bridge-Kanal (WebSocket) sonst
+  durch die CSP blockiert würde — `'self'` deckt das `ws:`-Schema nicht ab.
+* **Datenweg**: primär Cockpit-Bridge (`cockpit.http(44322).get()` →
+  serverseitige Verbindung zu 127.0.0.1:44322), direkter Browser-`fetch` nur
+  bei lokalem Seitenaufruf.
 
 ## Installation
 
@@ -91,19 +99,30 @@ sudo ./install.sh
 ```
 
 Das Skript ist idempotent und richtet alles ein: Pakete (`pcp`,
-`pcp-pmda-amdgpu`, `pcp-zeroconf`), PMDA-Registrierung, `valkey` + `pmproxy`,
-MMV-Exporter als Dienst `amdgpu-mmv`, pmlogconf-Gruppen, 5-Sekunden-Intervall
-in `config.default`, `PMLOGGER_CHECK_SKIP_LOGCONF=yes` und das Cockpit-Plugin
-unter `/usr/share/cockpit/gpu`. Danach Cockpit-Seite neu laden.
+`pcp-pmda-amdgpu`, `pcp-zeroconf`), PMDA-Registrierung, `pmproxy` +
+`valkey` (ältere Systeme: `redis`), MMV-Exporter als Dienst `amdgpu-mmv`
+(wird ohne AMD-GPU mit `mem_info_gtt_used` übersprungen), pmlogconf-Gruppen,
+5-Sekunden-Intervall in `config.default` (ankerbasierter, atomarer Edit),
+`PMLOGGER_CHECK_SKIP_LOGCONF=yes` und das Cockpit-Plugin unter
+`/usr/local/share/cockpit/gpu` (Admin-Pfad; eine Alt-Installation in
+`/usr/share/cockpit/gpu` wird entfernt). Danach Cockpit-Seite neu laden.
 
 Deinstallation: `sudo ./uninstall.sh` (löscht keine PCP-Archive).
 
 ### Voraussetzungen / Kontext
 
-* Fedora mit `pcp ≥ 6`, Cockpit ≥ 266 (Cockpit 370 getestet)
+* Fedora mit `pcp ≥ 6` (getestet: PCP/pmproxy 7.2.2), Cockpit ≥ 266 (getestet: 370)
 * AMD-GPU mit amdgpu-Treiber (sysfs `mem_info_gtt_used` vorhanden)
 * SELinux: auf dem Zielhost disabled; bei aktivem SELinux sind Kontexte/Booleans
   für pmproxy-Zugriff zu prüfen
+
+**Sicherheitshinweis pmproxy:** die pmseries-API ist unauthentifiziert.
+`pcp-zeroconf` kann pmproxy/pmcd über die Loopback-Schnittstelle hinaus
+öffnen — dann kann jeder im Netz die Metriken des Hosts lesen. Da das Plugin
+über die Cockpit-Bridge geht, genügt ein Loopback-Bind vollständig:
+in `/etc/pcp/pmproxy/pmproxy.conf` `spec.local.inet = 127.0.0.1:44322`
+(kein `spec.local.inet6`/`servers`-Eintrag für alle Flächen) setzen und
+pmproxy neu starten.
 
 ## Betrieb & Troubleshooting
 
@@ -144,10 +163,14 @@ chromium-browser --headless=new --user-data-dir=/tmp/prof \
   http://localhost:8899/gpu/index.html
 ```
 
-Der E2E-Test prüft: 5 Karten, Stundenblöcke (neueste zuerst, 5 Zellen),
-Stunde aufklappen (SVG 150 px), Sichtbarkeits-Dropdown (5→4 Zellen, Button
-„Graphen (4)"), Datumswechsel (Gestern → „Keine Daten", Heute → Blöcke),
-Reihenfolge Historie unterhalb der Karten.
+Der E2E-Test prüft: Kartenanzahl == Panel-Set, Device-Name aus der
+String-Metrik `amdgpu.cardname` (kein Fallback), Stundenblöcke (neueste
+zuerst, volle Zellenzahl), Stunde aufklappen (SVG 150 px),
+Sichtbarkeits-Dropdown (Reduktion + Menü bleibt nach Checkbox-Klick offen),
+Datumswechsel (Tageskopf wechselt „Heute" ↔ Vortag, Blöcke folgen), Reihenfolge
+Historie unterhalb der Karten. Browser-Binary per `E2E_BROWSER`
+(`chromium-browser`/`chromium`/`google-chrome`), CDP-Port per `E2E_PORT`;
+Profilverzeichnis PID-basiert (Parallelläufe).
 
 Während Entwicklung **nie** `systemctl restart cockpit` — das trennt die
 Browser-Session; Plugin-Dateien sind statisch, Browser-Reload genügt.
@@ -155,6 +178,8 @@ Browser-Session; Plugin-Dateien sind statisch, Browser-Reload genügt.
 ## Repo-Inhalt
 
 ```
+LICENSE           MIT
+.github/workflows/static.yml  CI: shellcheck, py_compile, node --check, JSON-Lint
 cockpit-plugin/   Cockpit-Modul (manifest.json, index.html, gpu.js, gpu.css)
 exporter/         amdgpu-gtt-mmv  — PCP-MMV-Exporter (GTT, gfxclk) aus sysfs
                   amdgpu-mmv.service — systemd-Unit (User pcp)
@@ -175,3 +200,13 @@ docs/screenshot.png
   beim Auto-Refresh auf 3 Stunden.
 * Die 5-s-Aufzeichnung erhöht die I/O-Last geringfügig; pmlogger-roten
   (`pmlogger_check`) bleiben ohne `SKIP_LOGCONF` aktiv.
+* **Eine GPU:** die Auswertung führt alle Instanzen einer Metrik pro
+  Zeitstrang zusammen (Werte mehrerer Karten würden vermischt). Der
+  Exporteur unterstützt zwar mehrere Karten, die UI ist aber für genau
+  eine GPU pro Host gebaut.
+* **Theme:** folgt dem `prefers-color-scheme` des Betriebssystems, nicht
+  dem manuellen Cockpit-Theme-Umschalter (Cockpit vererbt sein Theme nicht
+  an Fremd-Pakete; PatternFly-Tokens wären die langfristige Lösung).
+* Beschriftungen/Doku sind deutsch.
+* Diagramme werden beim Fenster-Resize neu gezeichnet; während laufender
+  Historien-Navigation kann ein Resize bis zum nächsten Render durchgehen.
