@@ -92,7 +92,16 @@ for svc in pmproxy pmcd; do
     hardened=yes
 done
 if [ "$hardened" = yes ]; then
-    systemctl restart pmproxy pmcd
+    # Timeout: ein feststeckender Alt-pmproxy ("won't die") darf die
+    # Installation nicht unerreichbar hängen lassen.
+    if ! timeout 120 systemctl restart pmproxy pmcd; then
+        echo "WARNUNG: pmproxy/pmcd-Neustart nicht durchgelaufen — vermutlich" >&2
+        echo "   hängt ein Alt-Prozess. Befreien mit:" >&2
+        echo "     ps -o pid,ppid,stat,user,cmd -C pmproxy   # STAT D=hängt im Kernel, Z=Zombie" >&2
+        echo "     sudo kill -KILL <pid>      # bei Z: stattdessen dessen PPID killen" >&2
+        echo "     sudo systemctl reset-failed pmproxy pmcd && sudo systemctl restart pmproxy pmcd" >&2
+        echo "   (STAT D lässt sich nur per Reboot lösen.) Danach install.sh erneut laufen lassen." >&2
+    fi
 fi
 
 # --- 4. MMV-Exporter (GTT + gfxclk) ----------------------------------------
@@ -192,7 +201,10 @@ fi
 
 # --- 7. pmlogger neu starten (nimmt neue Config/Intervalle) ----------------
 step "pmlogger neu starten"
-systemctl restart pmlogger
+if ! timeout 120 systemctl restart pmlogger; then
+    echo "WARNUNG: pmlogger-Neustart nicht durchgelaufen — ps -o pid,stat,cmd -C pmlogger" >&2
+    echo "   und ggf. kill + systemctl reset-failed pmlogger + erneut starten." >&2
+fi
 
 echo
 echo "Fertig. Prüfen mit:"

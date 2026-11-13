@@ -19,7 +19,8 @@ if [ -e /var/lib/pcp/config/pmlogconf/gpu ]; then
     step "pmlogconf-Gruppen entfernen und Config neu generieren"
     rm -rf /var/lib/pcp/config/pmlogconf/gpu
     pmlogconf -q /var/lib/pcp/config/pmlogger/config.default >/dev/null
-    systemctl restart pmlogger
+    timeout 120 systemctl restart pmlogger || \
+        echo "WARNUNG: pmlogger-Neustart nicht durchgelaufen (ps -o pid,stat,cmd -C pmlogger)" >&2
 else
     step "pmlogconf-Gruppen nicht vorhanden — Config bleibt unangetastet"
 fi
