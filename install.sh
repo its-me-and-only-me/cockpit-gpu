@@ -34,17 +34,40 @@ if [ ! -e "$PMDA_DIR/root" ]; then
     (cd "$PMDA_DIR" && ./Install </dev/null)
 fi
 
+# --- 2b. pmcd-Health-Check ---------------------------------------------------
+# pmlogconf (Schritt 5) löst Metriken über pmcd auf. Ist der pmcd nicht
+# ansprechbar — z. B. weil ein frisch registrierter binary-PMDA wie
+# pcp-pmda-bpf dessen Fetches blockiert — würde die Installation dort
+# scheinbar grundlos abhängen. Lieber hier laut abbrechen als dort still
+# warten.
+step "pmcd-Erreichbarkeit prüfen"
+if ! timeout 15 pminfo -T kernel.all.load >/dev/null 2>&1; then
+    echo "FEHLER: pmcd antwortet nicht innerhalb 15 s." >&2
+    echo "  Prüfen:  systemctl status pmcd" >&2
+    echo "           pminfo -T kernel.all.load   # hängt oder fehlerhaft?" >&2
+    echo "  Hängt ein PMDA (häufig pcp-pmda-bpf), hilft oft:" >&2
+    echo "           cd /var/lib/pcp/pmdas/<name> && sudo ./Remove && sudo systemctl restart pmcd" >&2
+    exit 1
+fi
+
 # --- 3. pmproxy + Key-Value-Store (PM series-Index) -------------------------
-# Fedora ≥ 41 nutzt valkey, älteres Fedora/EPEL redis — was auch immer da ist.
+# pmseries braucht einen Key-Value-Store; pcp-zeroconf zieht ihn NICHT
+# automatisch mit. Fedora ≥ 41 nutzt valkey, älteres Fedora/EPEL redis.
 step "pmproxy und valkey/redis aktivieren"
 systemctl enable --now pmproxy
-if systemctl list-unit-files valkey.service >/dev/null 2>&1 &&
-   systemctl cat valkey.service >/dev/null 2>&1; then
+if ! systemctl cat valkey.service >/dev/null 2>&1 &&
+   ! systemctl cat redis.service >/dev/null 2>&1; then
+    echo "   (kein valkey/redis installiert — pmseries-Index wird nachinstalliert)"
+    if dnf list --available valkey >/dev/null 2>&1; then
+        dnf install -y valkey
+    else
+        dnf install -y redis
+    fi
+fi
+if systemctl cat valkey.service >/dev/null 2>&1; then
     systemctl enable --now valkey
-elif systemctl cat redis >/dev/null 2>&1; then
-    systemctl enable --now redis
 else
-    echo "WARNUNG: weder valkey noch redis gefunden — pmseries-Index fehlt!" >&2
+    systemctl enable --now redis
 fi
 
 # --- 4. MMV-Exporter (GTT + gfxclk) ----------------------------------------
@@ -67,7 +90,16 @@ install -m 644 pcp/pmlogconf/gpu/amdgpu "$PMLOGCONF_DIR/gpu/amdgpu"
 install -m 644 pcp/pmlogconf/gpu/gtt    "$PMLOGCONF_DIR/gpu/gtt"
 
 step "config.default auf 5 seconds stellen"
-pmlogconf -q /var/lib/pcp/config/pmlogger/config.default >/dev/null
+# pmlogconf löst das PMNS über pmcd auf und kann bei hängendem pmcd stehen;
+# Timeout plus stdin</dev/null, damit hier nichts unsichtbar wartet.
+if ! timeout 180 pmlogconf -q /var/lib/pcp/config/pmlogger/config.default >/dev/null </dev/null; then
+    if [ -f /var/lib/pcp/config/pmlogger/config.default ]; then
+        echo "   (WARNUNG: pmlogconf nicht erfolgreich — vorhandene config.default wird verwendet)"
+    else
+        echo "FEHLER: keine config.default und pmlogconf nicht erfolgreich — pmcd prüfen (Schritt 2b)." >&2
+        exit 1
+    fi
+fi
 # Ankerbasierter, idempotenter, atomarer Edit (I1):
 #  - behandelt sowohl ':default:' als auch bereits gesetzte Intervall-Tags
 #  - patcht NUR das 'log advisory on …'-Statement innerhalb der gpu-Gruppen
@@ -109,7 +141,7 @@ if out != src:
     tmp = path + '.tmp-install'
     with open(tmp, 'w') as f:
         f.write(out)
-    os.fsync(f.fileno())
+        os.fsync(f.fileno())
     os.replace(tmp, path)
     print("config.default: gpu-Gruppen auf '5 seconds' gesetzt")
 else:

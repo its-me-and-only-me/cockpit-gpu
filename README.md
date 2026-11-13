@@ -99,8 +99,10 @@ sudo ./install.sh
 ```
 
 Das Skript ist idempotent und richtet alles ein: Pakete (`pcp`,
-`pcp-pmda-amdgpu`, `pcp-zeroconf`), PMDA-Registrierung, `pmproxy` +
-`valkey` (ältere Systeme: `redis`), MMV-Exporter als Dienst `amdgpu-mmv`
+`pcp-pmda-amdgpu`, `pcp-zeroconf`), eine pmcd-Erreichbarkeits-Prüfung,
+PMDA-Registrierung, `pmproxy` + Key-Value-Store (`valkey`, wird bei Bedarf
+wie `redis` nachinstalliert — `pcp-zeroconf` zieht ihn nicht automatisch),
+MMV-Exporter als Dienst `amdgpu-mmv`
 (wird ohne AMD-GPU mit `mem_info_gtt_used` übersprungen), pmlogconf-Gruppen,
 5-Sekunden-Intervall in `config.default` (ankerbasierter, atomarer Edit),
 `PMLOGGER_CHECK_SKIP_LOGCONF=yes` und das Cockpit-Plugin unter
@@ -138,6 +140,8 @@ Symptome und die in der Praxis verifizierten Ursachen:
 | MMV-Metriken fehlen/„invalid" | Enum-Werte: `PM_TYPE_U64=3`, `PM_SEM_INSTANT=2`, `PM_SEM_DISCRETE=3`; Fallback-Verzeichnis `/var/lib/pcp/tmp/mmv` muss existieren (Dienst läuft als User `pcp`) |
 | „Keine Daten" im Verlauf kurz nach Start | normal — Historie beginnt erst mit dem ersten pmlogger-Start mit GPU-Gruppen |
 | MMV-Metrik trotz Entfernen noch in `pminfo` (Wert 0) | pmdammv merkt sich die Metrik-Tabelle der Datei bis zum pmcd-Neustart; harmlos, nur kosmetisch |
+| Installer hängt bei „config.default auf 5 seconds stellen" | `pmlogconf` löst das PMNS über den pmcd auf und wartet, wenn der nicht antwortet — oft blockiert ein frisch registrierter binary-PMDA (bekannt: `pcp-pmda-bpf`). Der Installer prüft das jetzt vorab (`pminfo -T kernel.all.load` mit Timeout); manuell: `systemctl status pmcd`, Problempmda mit `./Remove` + `systemctl restart pmcd` |
+| Kein valkey/redis installiert | `pcp-zeroconf` zieht den Key-Value-Store **nicht** automatisch; `install.sh` installiert ihn bei Bedarf nach (`valkey`, sonst `redis`) |
 
 Sichtungs-Befehle:
 
