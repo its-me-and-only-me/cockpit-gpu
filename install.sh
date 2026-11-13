@@ -70,6 +70,31 @@ else
     systemctl enable --now redis
 fi
 
+# --- 3b. Härtung: unauthentifizierte PCP-Dienste nur auf Loopback -----------
+# Die pmseries-API ist ohne Authentifizierung; pcp-zeroconf lässt pmproxy
+# sonst auf allen Flächen lauschen. Das Plugin hängt ausschließlich über
+# die Cockpit-Bridge an 127.0.0.1 — extern wird nichts gebraucht.
+step "pmproxy/pmcd auf Loopback beschränken"
+hardened=no
+for svc in pmproxy pmcd; do
+    f="/etc/sysconfig/$svc"
+    var="PMPROXY_LOCAL"; [ "$svc" = pmcd ] && var="PMCD_LOCAL"
+    [ -f "$f" ] || continue
+    if grep -qsE "^[[:space:]]*${var}=1" "$f"; then
+        continue
+    fi
+    if grep -qsE "^# *${var}=1" "$f"; then
+        sed -i "s|^# *${var}=1|${var}=1|" "$f"
+    else
+        echo "${var}=1" >> "$f"
+    fi
+    echo "   ($f: ${var}=1 gesetzt)"
+    hardened=yes
+done
+if [ "$hardened" = yes ]; then
+    systemctl restart pmproxy pmcd
+fi
+
 # --- 4. MMV-Exporter (GTT + gfxclk) ----------------------------------------
 if [ "$HAVE_GPU" = yes ]; then
     step "MMV-Exporter installieren"
@@ -172,6 +197,7 @@ systemctl restart pmlogger
 echo
 echo "Fertig. Prüfen mit:"
 echo "  pminfo amdgpu mmv.amdgpu            # Live-Werte"
+echo "  ss -tlnp | grep -E '44321|44322'   # darf nur 127.0.0.1/[::1] zeigen"
 # shellcheck disable=SC1111  # deutsche Anführungszeichen im Ausgabetext beabsichtigt
 echo "  Cockpit neu laden → Menüpunkt „GPU“  (läuft alles über den Cockpit-Bridge-Kanal)"
 # shellcheck disable=SC2016,SC2028  # wörtliches Shell-Kommando als Hinweis-Text

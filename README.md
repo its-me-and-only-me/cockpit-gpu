@@ -118,13 +118,22 @@ Deinstallation: `sudo ./uninstall.sh` (löscht keine PCP-Archive).
 * SELinux: auf dem Zielhost disabled; bei aktivem SELinux sind Kontexte/Booleans
   für pmproxy-Zugriff zu prüfen
 
-**Sicherheitshinweis pmproxy:** die pmseries-API ist unauthentifiziert.
-`pcp-zeroconf` kann pmproxy/pmcd über die Loopback-Schnittstelle hinaus
-öffnen — dann kann jeder im Netz die Metriken des Hosts lesen. Da das Plugin
-über die Cockpit-Bridge geht, genügt ein Loopback-Bind vollständig:
-in `/etc/pcp/pmproxy/pmproxy.conf` `spec.local.inet = 127.0.0.1:44322`
-(kein `spec.local.inet6`/`servers`-Eintrag für alle Flächen) setzen und
-pmproxy neu starten.
+**Sicherheitshinweis pmproxy:** die pmseries-API ist unauthentifiziert und
+`pcp-zeroconf` lässt pmproxy standardmäßig auf **allen** Schnittstellen
+lauschen (`0.0.0.0:44322`) — ohne Härtung kann jeder im Netz die Metriken
+des Hosts lesen. pmproxy wird trotzdem gebraucht: es indexiert die
+pmlogger-Archive in valkey und ist damit der einzige Dienst, aus dem das
+Frontend Historie abfragen kann (pmseries-API). Da die Cockpit-Bridge
+serverseitig von `127.0.0.1` verbindet, genügt ein reiner Loopback-Bind
+vollständig — `install.sh` setzt daher automatisch `PMPROXY_LOCAL=1` in
+`/etc/sysconfig/pmproxy` (und `PMCD_LOCAL=1` für den pmcd, auf Fedora
+ohnehin Default) und startet die Dienste bei Änderung neu. DNS-SD-
+Bekanntmachung unterdrückt `-A` in `/etc/pcp/pmproxy/pmproxy.options`
+(bereits Fedora-Default). Kontrolle:
+
+```
+ss -tlnp | grep -E '44321|44322'   # darf nur 127.0.0.1/[::1] zeigen
+```
 
 ## Betrieb & Troubleshooting
 
